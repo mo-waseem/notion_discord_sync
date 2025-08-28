@@ -53,8 +53,6 @@ async def notion_webhook(request: Request):
 
         # Parse webhook payload
         try:
-            
-
             payload = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
             logger.error("Invalid JSON payload received")
@@ -83,7 +81,7 @@ async def notion_webhook(request: Request):
         ):
             # 1- We need only issues page updates
             # the updates are: create a new page or update it and we need to send that
-            # only if assigned, priority, name are set.
+            # only if all of assigned, priority and name are set.
             page_response = requests.get(
                 f"{constants.NOTION_URL}/v1/pages/{notion_webhook.entity.id}",
                 headers=constants.DEFAULT_NOTION_HEADERS,
@@ -128,7 +126,8 @@ async def notion_webhook(request: Request):
                     for property_name in required_properties
                 ]
             )
-            await redis_client.delete(f"issue_{page.id}")
+            
+            # await redis_client.delete(f"issue_{page.id}")
             issue_sent_before = await redis_client.get(f"issue_{page.id}")
             # print(f"issue_sent_before: {issue_sent_before}")
             if (

@@ -3,14 +3,14 @@ import os
 from discord import SyncWebhook
 
 # Put your webhook URL here
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DISCORD_LIVE_ISSUES_WEBHOOK_URL = os.getenv("DISCORD_LIVE_ISSUES_WEBHOOK_URL")
 
 async def send_discord_message(content: str):
     # SyncWebhook is blocking, so run it in a thread
     import asyncio
 
     def send_sync():
-        webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
+        webhook = SyncWebhook.from_url(DISCORD_LIVE_ISSUES_WEBHOOK_URL)
         webhook.send(content)
 
     loop = asyncio.get_event_loop()

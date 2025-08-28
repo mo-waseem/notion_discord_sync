@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 NOTION_URL = "https://api.notion.com"
 DEFAULT_NOTION_HEADERS = {

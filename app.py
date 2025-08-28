@@ -65,8 +65,8 @@ async def notion_webhook(request: Request):
         except Exception as e:  # noqa
             try:
                 verification_data = NotionVerifyData(**payload)  # noqa
-                logger.debug(
-                    f"Notion webhook subscription key: {verification_data.verification_token}" # noqa
+                logger.info(
+                    f"Notion webhook subscription key: {verification_data.verification_token}"  # noqa
                 )
             except Exception as e:
                 logger.error(f"Invalid webhook payload structure: {str(e)}")
@@ -86,7 +86,14 @@ async def notion_webhook(request: Request):
                 f"{constants.NOTION_URL}/v1/pages/{notion_webhook.entity.id}",
                 headers=constants.DEFAULT_NOTION_HEADERS,
             )
+            if page_response.status_code != 200:
+                logger.error(
+                    f"Error in retreiving the page id: {notion_webhook.entity.id}, error:\n {page_response.content}"
+                )
+                return
+
             page_body = page_response.json()
+            logger.info(page_body)
             page = NotionPage(**page_body)
 
             # 2- Send a discord message to the live-issues channel,
@@ -126,7 +133,7 @@ async def notion_webhook(request: Request):
                     for property_name in required_properties
                 ]
             )
-            
+
             # await redis_client.delete(f"issue_{page.id}")
             issue_sent_before = await redis_client.get(f"issue_{page.id}")
             # print(f"issue_sent_before: {issue_sent_before}")

@@ -1,169 +1,153 @@
-import os
-import logging
-import traceback
 import json
-from fastapi import FastAPI, Request, HTTPException
-import requests
-from dotenv import load_dotenv
-import redis.asyncio as redis
-import constants
+import traceback
+import yaml
+import httpx
+import logging
+from fastapi import HTTPException, Request, FastAPI
 from models import NotionPage, NotionWebhook, HealthResponse, NotionVerifyData
 from discord_client import send_discord_message
+import os
+import redis.asyncio as redis
+import constants
 
-# Load environment variables
-load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Notion to Discord Webhook Integration",
-    description="A service that forwards Notion issue tickets to Discord channels",
-    version="1.0.0",
-)
-
-# Connect to Redis server running locally
+# Redis client (async)
 redis_client = redis.Redis(
     host=os.getenv("REDIS_HOST", "localhost"),
     port=os.getenv("REDIS_PORT", 6379),
     db=os.getenv("REDIS_DB", 0),
 )
 
+# Load YAML config
+def load_config(config_path="config.yaml"):
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
 
-@app.get("/", response_model=HealthResponse)
-async def root():
-    """Root endpoint with basic service information"""
-    return HealthResponse(
-        status="healthy",
-        message="Notion to Discord Webhook Integration Service",
-        version="1.0.0",
-    )
+# Extract Notion property value dynamically
+def extract_property_value(page, property_name, property_type):
+    prop = page.properties.get(property_name)
+    if not prop:
+        return None
 
+    if property_type == "title" and prop.get("title"):
+        return prop["title"][0]["text"]["content"]
+    elif property_type == "rich_text" and prop.get("rich_text"):
+        return prop["rich_text"][0]["text"]["content"]
+    elif property_type == "people" and prop.get("people"):
+        return ", ".join([p.get("name") for p in prop["people"] if p.get("name")])
+    elif property_type in ["select", "status"] and prop.get(property_type):
+        return prop[property_type].get("name")
+    elif property_type == "date" and prop.get("date"):
+        return prop["date"].get("start")
+    elif property_type == "created_time" and prop.get("created_time"):
+        return prop["created_time"]
+    elif property_type == "number" and prop.get("number") is not None:
+        return str(prop["number"])
+    elif property_type == "checkbox" and prop.get("checkbox") is not None:
+        return str(prop["checkbox"])
+    return None
 
+# Validate all required fields are present
+def validate_required_properties(page, config):
+    for prop in config.get("required_properties", []):
+        if not extract_property_value(page, prop["name"], prop["type"]):
+            return False
+    return True
+
+# Build Discord message dynamically
+def construct_discord_message(page, config):
+    message = "🆕 **Issue Created**\n"
+
+    for prop in config.get("required_properties", []):
+        value = extract_property_value(page, prop["name"], prop["type"])
+        if value:
+            message += f"**{prop['name']}:** {value}\n"
+
+    for prop in config.get("optional_properties", []):
+        value = extract_property_value(page, prop["name"], prop["type"])
+        if value:
+            message += f"**{prop['name']}:** {value}\n"
+
+    message += f"🔗 [Open in Notion]({page.url})"
+    return message
+
+# Initialize FastAPI 
+app = FastAPI(title="Notion to Discord Webhook Integration",
+              description="A service that forwards Notion issue tickets to Discord channels",
+              version="1.0.0", )
+
+# Async webhook endpoint
 @app.post("/webhook/notion")
 async def notion_webhook(request: Request):
-    """
-    Webhook endpoint to receive Notion updates for new issue tickets
-    """
     try:
-        # Get request body and headers
         body = await request.body()
-
-        # Parse webhook payload
+        print(body)
         try:
             payload = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
-            logger.error("Invalid JSON payload received")
+            logger.error("Invalid JSON payload")
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-        # Validate and parse Notion webhook data
         notion_webhook = None
         try:
             notion_webhook = NotionWebhook(**payload)
-        except Exception as e:  # noqa
+        except Exception:
             try:
-                verification_data = NotionVerifyData(**payload)  # noqa
-                logger.info(
-                    f"Notion webhook subscription key: {verification_data.verification_token}"  # noqa
-                )
+                verification_data = NotionVerifyData(**payload)
+                logger.info(f"Notion verification token: {verification_data.verification_token}")
+                return {"status": "verified"}
             except Exception as e:
-                logger.error(f"Invalid webhook payload structure: {str(e)}")
-                raise HTTPException(
-                    status_code=400, detail=f"Invalid webhook payload: {str(e)}"
-                )
+                logger.error(f"Invalid webhook payload: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {str(e)}")
 
+        # Only handle page-created or properties-updated events
         if (
             notion_webhook
             and notion_webhook.entity.type == "page"
             and notion_webhook.type in ["page.created", "page.properties_updated"]
         ):
-            # 1- We need only issues page updates
-            # the updates are: create a new page or update it and we need to send that
-            # only if all of assigned, priority and name are set.
-            page_response = requests.get(
-                f"{constants.NOTION_URL}/v1/pages/{notion_webhook.entity.id}",
-                headers=constants.DEFAULT_NOTION_HEADERS,
-            )
-            if page_response.status_code != 200:
-                logger.error(
-                    f"Error in retreiving the page id: {notion_webhook.entity.id}, error:\n {page_response.content}"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{constants.NOTION_URL}/v1/pages/{notion_webhook.entity.id}",
+                    headers=constants.DEFAULT_NOTION_HEADERS,
+                    timeout=10
                 )
+
+            if response.status_code != 200:
+                logger.error(f"Failed to retrieve page {notion_webhook.entity.id}: {response.text}")
                 return
 
-            page_body = page_response.json()
-            logger.info(page_body)
-            page = NotionPage(**page_body)
+            page = NotionPage(**response.json())
+            print("print the page: \n", page , "\n")
 
-            # 2- Send a discord message to the live-issues channel,
-            # it will contains the following:
-            # - Name
-            # - Assignee
-            # This will be if:
-            # a- page is from Issues database
-            # b- required attrs are filled
-            # c- we don't send it before to the channel
-            is_issue_page = page.parent and page.parent.get("database_id") == os.getenv(
-                "NOTION_ISSUES_DATABASE_ID"
-            )
-            # print(f"is_issue_page: {is_issue_page}")
-            required_properties = {"Assignee": False, "Name": False}
-            for property_obj_name in page.properties:
-                if property_obj_name in required_properties:
-                    if property_obj_name == "Assignee":
-                        people = page.properties[property_obj_name]["people"]
-                        if people and people[0].get("name"):
-                            required_properties[property_obj_name] = True
-                    elif property_obj_name == "Name":
-                        name_object = page.properties[property_obj_name]
-                        if (
-                            name_object
-                            and name_object["title"]
-                            and name_object["title"][0]
-                            and name_object["title"][0]["text"]
-                            and name_object["title"][0]["text"]["content"]
-                        ):
-                            required_properties[property_obj_name] = True
+            is_issue_page = page.parent and page.parent.get("database_id") == os.getenv("NOTION_ISSUES_DATABASE_ID")
+            if not is_issue_page:
+                logger.info(f"Page {page.id} not from Issues database, skipping")
+                return
 
-            # print(f"required_properties: {required_properties}")
-            all_required_properties_filled = all(
-                [
-                    required_properties[property_name]
-                    for property_name in required_properties
-                ]
-            )
+            config = load_config()
+            if not validate_required_properties(page, config):
+                logger.info(f"Page {page.id} missing required fields, skipping")
+                return
 
-            # await redis_client.delete(f"issue_{page.id}")
-            issue_sent_before = await redis_client.get(f"issue_{page.id}")
-            # print(f"issue_sent_before: {issue_sent_before}")
-            if (
-                is_issue_page
-                and all_required_properties_filled
-                and not issue_sent_before
-            ):
-                # print("discord send")
-                msg = (
-                    f"🆕 **Issue Created**\n"
-                    f"**Name:** {page.properties['Name']['title'][0]['text']['content']}\n"
-                    f"**Assigned to:** {page.properties['Assignee']['people'][0]['name']}\n"
-                )
-                if (
-                    page.properties["Priority"]
-                    and page.properties["Priority"]["select"]
-                    and page.properties["Priority"]["select"]["name"]
-                ):
-                    priority = page.properties["Priority"]["select"]["name"]
-                    msg += f"**Priority:** {priority}\n"
+            issue_key = f"issue_{page.id}"
+            if await redis_client.get(issue_key):
+                logger.info(f"Issue {page.id} already sent, skipping")
+                return
 
-                msg += f"🔗 [Open in Notion]({page.url})"
+            message = construct_discord_message(page, config)
+            await send_discord_message(message)
 
-                await send_discord_message(msg)
+            # Mark as sent in Redis (expires in 7 days)
+            await redis_client.set(issue_key, "sent", ex=60*60*24*7)
 
-                # Mark as sent in Redis
-                await redis_client.set(f"issue_{page.id}", "sent")
+        else:
+            logger.info(f"Webhook type {notion_webhook.type} not relevant, skipping")
 
     except Exception:
-        print(traceback.format_exc())
+        logger.error(traceback.format_exc())
 
     return HealthResponse(status="200", message="Success", version="1.0")

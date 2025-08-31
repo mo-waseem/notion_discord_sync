@@ -1,0 +1,19 @@
+required_properties:
+  - name: "Issue"
+    type: "title"
+  - name: "Assignee"
+    type: "people"
+  - name: "Priority"
+    type: "select"
+  - name: "DODO"
+    type: "rich_text"
+
+optional_properties:
+  - name: "Due date"
+    type: "date"
+  - name: "Status"
+    type: "status"
+  - name: "Created time"
+    type: "created_time"
+  - name: "CAT"
+    type: "number"

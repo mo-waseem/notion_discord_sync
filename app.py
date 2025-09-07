@@ -60,29 +60,32 @@ async def notion_webhook(request: Request):
             logger.error("Invalid JSON payload received")
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-        # Validate and parse Notion webhook data if page only
-        if payload.get("object") == "page":
-            notion_webhook = None
+        if payload.get("verification_token"):
             try:
-                notion_webhook = NotionWebhook(**payload)
-            except Exception as e:  # noqa
-                logger.error(f"Invalid page-webhook payload structure: {str(e)}")
-                raise HTTPException(
-                    status_code=400, detail=f"Invalid page-webhook payload: {str(e)}"
+                verification_data = NotionVerifyData(**payload)  # noqa
+                logger.info(
+                    f"Notion webhook subscription key: {verification_data.verification_token}"  # noqa
                 )
-
-            # Validate if verification token
-            if "verification_token" in payload:
-                try:
-                    verification_data = NotionVerifyData(**payload)  # noqa
-                    logger.info(
-                        f"Notion webhook subscription key: {verification_data.verification_token}"  # noqa
-                    )
-                except Exception as e:
-                    logger.error(f"Invalid token-webhook payload structure: {str(e)}")
-                    raise HTTPException(
-                        status_code=400, detail=f"Invalid token-webhook payload: {str(e)}"
-                    )
+                return HealthResponse(status="200", message="verification token received", version="1.0")
+            except Exception as e:
+                logger.error(f"Invalid webhook payload structure: {str(e)}")
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid webhook payload: {str(e)}"
+                )
+       
+        if not payload.get("id"):
+            logger.info(f"Ignoring non-valid events{payload}")
+            return HealthResponse(status="200", message="Ignored non-valid event", version="1.0")
+        
+        # Validate and parse Notion webhook data
+        notion_webhook = None
+        try:
+            notion_webhook = NotionWebhook(**payload)
+        except Exception as e:  # noqa
+                logger.error(f"Invalid webhook payload structure: {str(e)}")
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid webhook payload: {str(e)}"
+                )
 
         if (
             notion_webhook
